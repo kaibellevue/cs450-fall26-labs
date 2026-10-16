@@ -1,7 +1,10 @@
 package edu.bellevuecollege.cs450;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * CS 450 Lab 1 — the store.
@@ -21,21 +24,14 @@ import java.util.Optional;
  */
 public final class Store {
 
-    // TODO(cp1): choose what holds the data.
-    //
-    // A java.util.HashMap will pass CP1 and fail CP2, and it will fail in a way
-    // that looks like a ghost: a key that appears twice, a value that is half
-    // of one write and half of another, a size() that does not match what you
-    // put in. Chapter 3 is about why. When you get there, the fix is one
-    // import, not a redesign -- but make sure you can say what it protects you
-    // against before you reach for it.
+    // Using ConcurrentHashMap so we're safe for CP2 multi-threading
+    private final Map<String, String> map = new ConcurrentHashMap<>();
 
     /**
      * Store a value, replacing anything already under that key.
      */
     public void put(String key, String value) {
-        // TODO(cp1)
-        throw new UnsupportedOperationException("Store.put is not implemented yet");
+        map.put(key, value);
     }
 
     /**
@@ -47,16 +43,18 @@ public final class Store {
      * 404 over REST.
      */
     public Optional<String> get(String key) {
-        // TODO(cp1)
-        throw new UnsupportedOperationException("Store.get is not implemented yet");
+        String val = map.get(key);
+        if (val == null) {
+            return Optional.empty();
+        }
+        return Optional.of(val);
     }
 
     /**
      * Remove a key. True if it was there, false if it was not.
      */
     public boolean delete(String key) {
-        // TODO(cp1)
-        throw new UnsupportedOperationException("Store.delete is not implemented yet");
+        return map.remove(key) != null;
     }
 
     /**
@@ -66,15 +64,13 @@ public final class Store {
      * read it while another thread is writing. Hand back a copy.
      */
     public List<String> keys() {
-        // TODO(cp1)
-        throw new UnsupportedOperationException("Store.keys is not implemented yet");
+        return new ArrayList<>(map.keySet());
     }
 
     /**
      * How many keys are held. Used by STATS and by /stats.
      */
     public int size() {
-        // TODO(cp1)
-        throw new UnsupportedOperationException("Store.size is not implemented yet");
+        return map.size();
     }
 }

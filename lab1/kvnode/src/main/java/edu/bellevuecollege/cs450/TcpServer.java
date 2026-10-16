@@ -7,6 +7,8 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Optional;
 
 /**
  * CS 450 Lab 1 — the line-based protocol, on TCP port 9090.
@@ -63,7 +65,7 @@ public final class TcpServer implements Runnable {
                 // client at a time, and it is the first thing CP2 checks.
                 //
                 // When you change it, the question stops being "does it work"
-                // and becomes "what happens when two of these touch the Store
+                // and becomes "what happens when two of these touch the Store"
                 // at the same moment". See Store.java.
                 serve(socket);
             }
@@ -108,7 +110,98 @@ public final class TcpServer implements Runnable {
      *     value; readLine() strips the newline but not always the \r
      */
     String handle(String line) {
-        // TODO(cp1): parse the line, call the Store, build the reply.
-        return "ERR not implemented";
+        if (line == null || line.isEmpty()) {
+            return "ERR empty line";
+        }
+
+        // strip carriage return if client sent \r\n
+        if (line.endsWith("\r")) {
+            line = line.substring(0, line.length() - 1);
+        }
+
+        String[] parts = line.split(" ");
+        String cmd = parts[0];
+
+        if (cmd.equals("PUT")) {
+            // PUT <key> <value>
+            // Note: value can contain spaces, so split on first 2 spaces
+            int firstSpace = line.indexOf(' ');
+            if (firstSpace == -1) {
+                return "ERR malformed PUT";
+            }
+            int secondSpace = line.indexOf(' ', firstSpace + 1);
+            if (secondSpace == -1) {
+                return "ERR malformed PUT";
+            }
+
+            String key = line.substring(firstSpace + 1, secondSpace);
+            String val = line.substring(secondSpace + 1);
+
+            if (key.isEmpty() || key.length() > 64) {
+                return "ERR invalid key length";
+            }
+            if (val.getBytes(StandardCharsets.UTF_8).length > 1024) {
+                return "ERR value too long";
+            }
+
+            store.put(key, val);
+            return "OK";
+
+        } else if (cmd.equals("GET")) {
+            if (parts.length != 2) {
+                return "ERR bad GET";
+            }
+            String key = parts[1];
+            if (key.isEmpty() || key.length() > 64) {
+                return "ERR invalid key";
+            }
+
+            Optional<String> res = store.get(key);
+            if (res.isPresent()) {
+                return "VALUE " + res.get();
+            } else {
+                return "NOT_FOUND";
+            }
+
+        } else if (cmd.equals("DEL")) {
+            if (parts.length != 2) {
+                return "ERR bad DEL";
+            }
+            String key = parts[1];
+            if (key.isEmpty() || key.length() > 64) {
+                return "ERR invalid key";
+            }
+
+            boolean removed = store.delete(key);
+            if (removed) {
+                return "OK";
+            } else {
+                return "NOT_FOUND";
+            }
+
+        } else if (cmd.equals("KEYS")) {
+            if (parts.length != 1) {
+                return "ERR bad KEYS";
+            }
+            List<String> allKeys = store.keys();
+            if (allKeys.isEmpty()) {
+                return "KEYS";
+            }
+
+            StringBuilder sb = new StringBuilder("KEYS");
+            for (String k : allKeys) {
+                sb.append(" ").append(k);
+            }
+            return sb.toString();
+
+        } else if (cmd.equals("STATS")) {
+            if (parts.length != 1) {
+                return "ERR bad STATS";
+            }
+            return "STATS keys=" + store.size() + " node=" + nodeId;
+
+        } else {
+            return "ERR unknown command";
+        }
     }
 }
