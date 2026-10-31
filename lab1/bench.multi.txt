@@ -1,0 +1,11 @@
+# CS 450 Lab 1 benchmark results -- MULTITHREADED server (concurrent clients)
+# throughput: pipelined, all clients at once.
+# Timed on this machine's clock. See the comment at the top of bench.sh.
+# Sat Oct 31 13:56:42 PDT 2026
+
+tcp   clients=1   requests=500    elapsed=    88ms throughput=   5682 req/s node=0ad77a595099
+tcp   clients=4   requests=2000   elapsed=   131ms throughput=  15267 req/s node=0ad77a595099
+tcp   clients=16  requests=8000   elapsed=   321ms throughput=  24922 req/s node=0ad77a595099
+rest  clients=1   requests=500    elapsed=   729ms throughput=    686 req/s node=0ad77a595099
+rest  clients=4   requests=2000   elapsed=   985ms throughput=   2030 req/s node=0ad77a595099
+rest  clients=16  requests=8000   elapsed=  2996ms throughput=   2670 req/s node=0ad77a595099

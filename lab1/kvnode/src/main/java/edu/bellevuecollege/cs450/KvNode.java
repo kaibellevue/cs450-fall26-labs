@@ -7,95 +7,148 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Executors;
 
-/**
- * CS 450 Lab 1 — the node.
- *
- * Two front doors onto one Store:
- *
- *   port 8080  HTTP. The Lab 0 routes still work, and the REST resources are
- *              new. Published through the proxy, so these requests are spread
- *              across replicas.
- *   port 9090  the line-based protocol. Not published. See TcpServer.
- *
- * Both reach the same Store instance, created once here. That is deliberate:
- * if the two protocols could ever disagree about what is stored, you would
- * have built two databases that happen to share a process.
- *
- * No third-party dependencies, same as Lab 0. The HTTP server is the one in
- * the JDK.
- */
 public final class KvNode {
-
     private static final String NODE_ID = resolveNodeId();
 
     public static void main(String[] args) throws IOException {
         Store store = new Store();
+
+        int httpPort = readPort("NODE_PORT", 8080);
+        HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 0);
+        server.setExecutor(Executors.newFixedThreadPool(8));
+
+        server.createContext("/whoami", exchange -> {
+            if (!exchange.getRequestURI().getPath().equals("/whoami")) {
+                respond(exchange, 404, "not found");
+                return;
+            }
+            respond(exchange, 200, NODE_ID + "\n");
+        });
+
+        server.createContext("/health", exchange -> {
+            if (!exchange.getRequestURI().getPath().equals("/health")) {
+                respond(exchange, 404, "not found");
+                return;
+            }
+            respond(exchange, 200, "ok\n");
+        });
+
+        server.createContext("/kv", exchange -> kv(exchange, store));
+        server.createContext("/stats", exchange -> stats(exchange, store));
+        server.createContext("/", exchange -> respond(exchange, 404, "not found"));
 
         int kvPort = readPort("KV_PORT", 9090);
         Thread tcp = new Thread(new TcpServer(kvPort, store, NODE_ID), "tcp-listener");
         tcp.setDaemon(false);
         tcp.start();
 
-        int httpPort = readPort("NODE_PORT", 8080);
-        HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 0);
-        server.setExecutor(Executors.newFixedThreadPool(8));
-
-        // --- Lab 0 routes. The harness and the graders still use these. ---
-        server.createContext("/whoami", ex -> respond(ex, 200, NODE_ID + "\n"));
-        server.createContext("/health", ex -> respond(ex, 200, "ok\n"));
-
-        // --- Lab 1 REST resources. See the handout. ---
-        server.createContext("/kv", ex -> kv(ex, store));
-        server.createContext("/stats", ex -> stats(ex, store));
-
         server.start();
         System.out.println("kvnode " + NODE_ID + " listening for HTTP on port " + httpPort);
     }
 
-    /**
-     * Everything under /kv.
-     *
-     *   PUT    /kv/<key>   body is the value   -> 200 "OK", or 400
-     *   GET    /kv/<key>                       -> 200 value, or 404
-     *   DELETE /kv/<key>                       -> 200 "OK", or 404
-     *   GET    /kv                             -> 200, one key per line
-     *   anything else on these paths           -> 405
-     *
-     * Note that one handler serves both the collection (/kv) and the items
-     * (/kv/<key>). That is not an accident of the JDK's router -- it is what
-     * "resources under a single naming scheme" means in practice. Compare the
-     * TcpServer, where every operation is its own verb.
-     *
-     * The status code is the message. A client that has never spoken to you
-     * before reads 404 and knows exactly what happened, with nothing else to
-     * look up. Getting these right is part of CP2, not decoration.
-     */
     private static void kv(HttpExchange exchange, Store store) throws IOException {
-        // TODO(cp2): route on the method and the path, call the Store, choose
-        // the status code. The key is whatever follows "/kv/".
-        respond(exchange, 501, "not implemented\n");
+        String path = exchange.getRequestURI().getPath();
+        String method = exchange.getRequestMethod();
+
+        if (path.equals("/kv")) {
+            if (!method.equals("GET")) {
+                respond(exchange, 405, "method not allowed");
+                return;
+            }
+
+            List<String> keys = store.keys();
+            respond(exchange, 200, String.join("\n", keys));
+            return;
+        }
+
+        // The HTTP router matches prefixes, so /kvhello needs this check.
+        if (!path.startsWith("/kv/")) {
+            respond(exchange, 404, "not found");
+            return;
+        }
+
+        if (!method.equals("PUT") && !method.equals("GET") && !method.equals("DELETE")) {
+            respond(exchange, 405, "method not allowed");
+            return;
+        }
+
+        String key = path.substring(4);
+        if (!Store.validKey(key)) {
+            int status = method.equals("PUT") ? 400 : 404;
+            respond(exchange, status, "invalid key");
+            return;
+        }
+
+        if (method.equals("PUT")) {
+            // Read one extra byte so oversized values can be rejected.
+            byte[] body = exchange.getRequestBody().readNBytes(1025);
+            if (body.length > 1024) {
+                respond(exchange, 400, "value too long");
+                return;
+            }
+
+            String value = new String(body, StandardCharsets.UTF_8);
+            if (!Store.validValue(value)) {
+                respond(exchange, 400, "invalid value");
+                return;
+            }
+
+            store.put(key, value);
+            respond(exchange, 200, "OK");
+            return;
+        }
+
+        if (method.equals("GET")) {
+            Optional<String> value = store.get(key);
+            if (value.isPresent()) {
+                respond(exchange, 200, value.get());
+            } else {
+                respond(exchange, 404, "not found");
+            }
+            return;
+        }
+
+        if (store.delete(key)) {
+            respond(exchange, 200, "OK");
+        } else {
+            respond(exchange, 404, "not found");
+        }
     }
 
-    /**
-     *   GET /stats -> 200, body "keys=<n> node=<id>"
-     *
-     * Same text as the STATS reply over TCP, so that the two protocols cannot
-     * drift apart. Any method other than GET gets 405.
-     */
     private static void stats(HttpExchange exchange, Store store) throws IOException {
-        // TODO(cp2)
-        respond(exchange, 501, "not implemented\n");
+        if (!exchange.getRequestURI().getPath().equals("/stats")) {
+            respond(exchange, 404, "not found");
+            return;
+        }
+        if (!exchange.getRequestMethod().equals("GET")) {
+            respond(exchange, 405, "method not allowed");
+            return;
+        }
+
+        respond(exchange, 200, "keys=" + store.size() + " node=" + NODE_ID);
     }
 
     static void respond(HttpExchange exchange, int status, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().add("Content-Type", "text/plain; charset=utf-8");
-        exchange.getResponseHeaders().add("X-Node-Id", NODE_ID);
+        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        exchange.getResponseHeaders().set("X-Node-Id", NODE_ID);
+
+        // Empty values are allowed. HEAD responses also have no body.
+        if (bytes.length == 0 || exchange.getRequestMethod().equals("HEAD")) {
+            exchange.sendResponseHeaders(status, -1);
+            exchange.close();
+            return;
+        }
+
         exchange.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = exchange.getResponseBody()) {
             out.write(bytes);
+        } finally {
+            exchange.close();
         }
     }
 
@@ -105,17 +158,17 @@ public final class KvNode {
             return fallback;
         }
         try {
-            return Integer.parseInt(configured.trim());
+            int port = Integer.parseInt(configured.trim());
+            if (port >= 1 && port <= 65535) {
+                return port;
+            }
         } catch (NumberFormatException e) {
-            System.err.println(var + " is not a number: " + configured + " — using " + fallback);
-            return fallback;
+            // Use the normal port if the setting isn't a number.
         }
+        System.err.println("Invalid " + var + "; using " + fallback);
+        return fallback;
     }
 
-    /**
-     * Inside a container the hostname is the short container ID, which differs
-     * for every replica. That is exactly the identity we want.
-     */
     private static String resolveNodeId() {
         String fromEnv = System.getenv("NODE_ID");
         if (fromEnv != null && !fromEnv.isBlank()) {
