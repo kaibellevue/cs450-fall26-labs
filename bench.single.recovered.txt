@@ -1,0 +1,7 @@
+# CS 450 Lab 1 benchmark results -- SINGLE-THREADED server (one client at a time)
+# throughput: pipelined, all clients at once.
+# Timed on this machine's clock. See the comment at the top of bench.sh.
+# Sat Oct 31 14:11:41 PDT 2026
+
+tcp   clients=1   requests=500    elapsed=    83ms throughput=   6024 req/s node=7e9b7c5c14d0
+tcp   clients=4   requests=2000   elapsed=   111ms throughput=  18018 req/s node=7e9b7c5c14d0
