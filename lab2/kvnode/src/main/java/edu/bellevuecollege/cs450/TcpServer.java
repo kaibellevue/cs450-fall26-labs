@@ -137,39 +137,60 @@ public final class TcpServer implements Runnable {
                 return "OK";
             }
 
-            // ------------------------------------------------------- CP3
+                        // ------------------------------------------------------- CP3
             case "MEMBERS" -> {
-                // TODO(cp3): MEMBERS <id1> <id2> ... in file order
-                return "ERR not implemented";
+                if (!rest.isEmpty()) return "ERR MEMBERS takes no arguments";
+                List<String> ids = membership.ids();
+                return ids.isEmpty() ? "MEMBERS" : "MEMBERS " + String.join(" ", ids);
             }
             case "RELOAD" -> {
-                // TODO(cp3): re-read the file. OK, or ERR <reason> if it will
-                // not parse -- and on a bad file keep serving the old list.
-                return "ERR not implemented";
+                if (!rest.isEmpty()) return "ERR RELOAD takes no arguments";
+                try {
+                    membership.reload();
+                    return "OK";
+                } catch (IOException e) {
+                    return "ERR " + e.getMessage();
+                }
             }
             case "CLOCK" -> {
-                // TODO(cp3): report the clock WITHOUT advancing it
-                return "ERR not implemented";
+                if (!rest.isEmpty()) return "ERR CLOCK takes no arguments";
+                return "CLOCK " + clock.now() + " node=" + nodeId;
             }
             case "TICK" -> {
-                // TODO(cp3): one local event here, then report the new value
-                return "ERR not implemented";
+                if (!rest.isEmpty()) return "ERR TICK takes no arguments";
+                return "CLOCK " + clock.tick() + " node=" + nodeId;
             }
             case "PING" -> {   // PING <ts> <node>
-                // TODO(cp3): a message arrived carrying their timestamp.
-                // Update this node's clock and answer
-                //     PONG <our new value> <our node id>
-                // The reply is a message too, so it will move the sender's
-                // clock when it gets there -- which is the half of the rule
-                // most people forget.
-                return "ERR not implemented";
+                String[] parts = rest.trim().split("\\s+");
+                if (rest.isBlank() || parts.length != 2) {
+                    return "ERR PING needs a timestamp and a node";
+                }
+                long received;
+                try {
+                    received = Long.parseLong(parts[0]);
+                } catch (NumberFormatException e) {
+                    return "ERR invalid timestamp";
+                }
+                long updated = clock.update(received);
+                return "PONG " + updated + " " + nodeId;
             }
             case "GOSSIP" -> {
-                // TODO(cp3): one local event here; send PING <ts> <self> to
-                // every peer with peers.askAll(...); fold each PONG back into
-                // this node's clock. Reply  OK sent=<ts> now=<clock>
-                return "ERR not implemented";
+                if (!rest.isEmpty()) return "ERR GOSSIP takes no arguments";
+                long sent = clock.tick();
+                List<String> replies = peers.askAll("PING " + sent + " " + nodeId);
+                for (String reply : replies) {
+                    if (reply == null || !reply.startsWith("PONG ")) continue;
+                    String[] parts = reply.split("\\s+");
+                    if (parts.length < 2) continue;
+                    try {
+                        clock.update(Long.parseLong(parts[1]));
+                    } catch (NumberFormatException ignored) {
+                        // ignore malformed peer reply
+                    }
+                }
+                return "OK sent=" + sent + " now=" + clock.now();
             }
+
 
             // ------------------------------------------------------- CP4
             case "LOCK" -> {
