@@ -122,20 +122,17 @@ public final class TcpServer implements Runnable {
                 if (value.getBytes(StandardCharsets.UTF_8).length > MAX_VALUE) {
                     return "ERR value is longer than " + MAX_VALUE + " bytes";
                 }
-                // PUT grows with the lab, one checkpoint at a time:
-                //
-                //   CP3  write locally, as below. Nothing is shared yet.
-                //   CP4  TODO(cp4): take the lock, write locally, release it.
-                //        locks.acquire(key) / store.put(...) / locks.release(key),
-                //        and answer ERR if the lock could not be taken. This is
-                //        what gives the lock something to do before there is a
-                //        transaction to wrap.
-                //   CP5  TODO(cp5): replace the whole thing with
-                //            return txn.put(key, value);
-                //        which takes the lock itself.
-                store.put(key, value);
-                return "OK";
+                if (!locks.acquire(key)) {
+                    return "ERR could not acquire lock for " + key;
+                }
+                try {
+                    store.put(key, value);
+                    return "OK";
+                } finally {
+                    locks.release(key);
+                }
             }
+
 
                         // ------------------------------------------------------- CP3
             case "MEMBERS" -> {
@@ -194,15 +191,37 @@ public final class TcpServer implements Runnable {
 
             // ------------------------------------------------------- CP4
             case "LOCK" -> {
-                // TODO(cp4): LOCK <key> <ts> <node> -> LockManager.onLockRequest.
-                // That call may block for a long time, and that is correct:
-                // the reply is deferred until this node is willing to grant.
-                return "ERR not implemented";
+                String[] parts = rest.trim().split("\\s+");
+                if (rest.isBlank() || parts.length != 3) {
+                    return "ERR LOCK needs a key, a timestamp, and a node";
+                }
+                String bad = checkKey(parts[0]);
+                if (bad != null) return bad;
+                long ts;
+                try {
+                    ts = Long.parseLong(parts[1]);
+                } catch (NumberFormatException e) {
+                    return "ERR invalid timestamp";
+                }
+                return locks.onLockRequest(parts[0], ts, parts[2]);
             }
             case "RELEASE" -> {
-                // TODO(cp4): LockManager.onRelease, then OK.
-                return "ERR not implemented";
+                String[] parts = rest.trim().split("\\s+");
+                if (rest.isBlank() || parts.length != 3) {
+                    return "ERR RELEASE needs a key, a timestamp, and a node";
+                }
+                String bad = checkKey(parts[0]);
+                if (bad != null) return bad;
+                long ts;
+                try {
+                    ts = Long.parseLong(parts[1]);
+                } catch (NumberFormatException e) {
+                    return "ERR invalid timestamp";
+                }
+                locks.onRelease(parts[0], ts, parts[2]);
+                return "OK";
             }
+
 
             // ------------------------------------------------------- CP5
             case "PREPARE" -> {

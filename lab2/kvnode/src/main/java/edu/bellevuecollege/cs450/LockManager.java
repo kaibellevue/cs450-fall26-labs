@@ -54,22 +54,68 @@ public final class LockManager {
 
     /**
      * Take the lock on a key, blocking until every peer has granted.
-     * False if any peer failed to answer.  TODO(cp4)
-     *
-     * Shape: take the key's local lock; stamp a request with clock.tick();
-     * peers.askAll("LOCK <key> <ts> <self>"); you hold it only if every reply
-     * is a GRANT. Mind the failure path -- if you do not enter, the local lock
-     * has to come back off or the next thread on this node waits forever.
+     * False if any peer failed to answer.
      */
     public boolean acquire(String key) {
-        // TODO(cp4)
+        KeyState s;
+        mutex.lock();
+        try {
+            s = state(key);
+        } finally {
+            mutex.unlock();
+        }
+
+        s.local.lock();
+        long reqTs;
+        mutex.lock();
+        try {
+            reqTs = clock.tick();
+            s.wanted = true;
+            s.ts = reqTs;
+        } finally {
+            mutex.unlock();
+        }
+
+        List<String> replies = peers.askAll("LOCK " + key + " " + reqTs + " " + selfId);
+        boolean granted = true;
+        for (String reply : replies) {
+            if (!("GRANT " + key).equals(reply)) {
+                granted = false;
+                break;
+            }
+        }
+
+        mutex.lock();
+        try {
+            s.wanted = false;
+            if (granted) {
+                s.held = true;
+                return true;
+            }
+            wakeDeferred(s);
+        } finally {
+            mutex.unlock();
+        }
+
+        s.local.unlock();
         return false;
     }
 
-    /** Leave the critical region and send the replies we held back.  TODO(cp4) */
+    /** Leave the critical region and send the replies we held back. */
     public void release(String key) {
-        // TODO(cp4)
+        KeyState s;
+        mutex.lock();
+        try {
+            s = keys.get(key);
+            if (s == null || !s.held) return;
+            s.held = false;
+            wakeDeferred(s);
+        } finally {
+            mutex.unlock();
+        }
+        s.local.unlock();
     }
+
 
     private void wakeDeferred(KeyState s) {
         for (Condition c : s.deferred) c.signalAll();
@@ -96,10 +142,36 @@ public final class LockManager {
      * To defer: make a Condition from 'mutex', put it in s.deferred, and await
      * it. Awaiting releases the mutex, so the rest of the node keeps working.
      */
+    /**
+     * A peer wants the lock on a key. Return the line to reply with, blocking
+     * for as long as the reply has to be deferred.
+     */
     public String onLockRequest(String key, long ts, String from) {
-        // TODO(cp4): update the clock first -- this is a message arriving.
-        return "GRANT " + key;
+        clock.update(ts);
+        mutex.lock();
+        try {
+            KeyState s = state(key);
+            while (s.held || (s.wanted && weHavePriority(s.ts, ts, from))) {
+                Condition c = mutex.newCondition();
+                s.deferred.add(c);
+                try {
+                    c.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+            return "GRANT " + key;
+        } finally {
+            mutex.unlock();
+        }
     }
+
+    private boolean weHavePriority(long ourTs, long theirTs, String theirId) {
+        if (ourTs != theirTs) return ourTs < theirTs;
+        return selfId.compareTo(theirId) < 0;
+    }
+
 
     public void onRelease(String key, long ts, String from) {
         clock.update(ts);
